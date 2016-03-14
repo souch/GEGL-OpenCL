@@ -38,6 +38,55 @@ prepare (GeglOperation *operation)
   gegl_operation_set_format (operation, "output", babl_format ("R'G'B'A float"));
 }
 
+
+#include "opencl/gegl-cl.h"
+#include "buffer/gegl-buffer-cl-iterator.h"
+
+#include "opencl/invert-gamma.cl.h"
+
+static GeglClRunData *cl_data = NULL;
+
+
+static gboolean
+cl_process (GeglOperation       *operation,
+            cl_mem              in,
+            cl_mem              out,
+            size_t              global_worksize,
+            const GeglRectangle *result,
+            gint                level)
+{
+  GeglProperties *o = GEGL_PROPERTIES (operation);
+  cl_int cl_err = 0;
+
+  if (!cl_data)
+    {
+      const char *kernel_name[] = {"cl_invert_gamma",
+                                   NULL};
+      cl_data = gegl_cl_compile_and_build (invert_gamma_cl_source, kernel_name);
+    }
+
+  if (!cl_data)
+    return TRUE;
+
+  cl_err = gegl_cl_set_kernel_args (cl_data->kernel[0],
+                                    sizeof(cl_mem), &in,
+                                    sizeof(cl_mem), &out,
+                                    NULL);
+  CL_CHECK;
+
+  cl_err = gegl_clEnqueueNDRangeKernel (gegl_cl_get_command_queue (),
+                                        cl_data->kernel[0], 1,
+                                        NULL, &global_worksize, NULL,
+                                        0, NULL, NULL);
+  CL_CHECK;
+
+  return FALSE;
+
+error:
+  return TRUE;
+}
+
+
 static gboolean
 process (GeglOperation       *op,
          void                *in_buf,
@@ -46,6 +95,10 @@ process (GeglOperation       *op,
          const GeglRectangle *roi,
          gint                 level)
 {
+  if (gegl_operation_use_opencl (op))
+    if (cl_process (op, in_buf, out_buf, samples, roi, level))
+      return TRUE;
+
   gfloat *in  = in_buf;
   gfloat *out = out_buf;
 
@@ -62,6 +115,7 @@ process (GeglOperation       *op,
   return TRUE;
 }
 
+
 static void
 gegl_op_class_init (GeglOpClass *klass)
 {
@@ -73,6 +127,9 @@ gegl_op_class_init (GeglOpClass *klass)
 
   operation_class->prepare     = prepare;
   point_filter_class->process  = process;
+  point_filter_class->cl_process  = cl_process;
+
+  operation_class->opencl_support = TRUE;
 
   gegl_operation_class_set_keys (operation_class,
     "name"       , "gegl:invert-gamma",
@@ -83,5 +140,6 @@ gegl_op_class_init (GeglOpClass *klass)
          "corresponding \"negative\" image."),
     NULL);
 }
+
 
 #endif
